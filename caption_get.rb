@@ -5,21 +5,20 @@ require 'json'
 require 'selenium-webdriver'
 require 'byebug'
 require 'cgi/escape'
-
+require 'nokogiri'
 
 #SdD.W8ZXYBLhMtC
 
 @video_id = ""
-@user_email = ""
-@user_paswd = ""
 @user_pc = ""
 @caption_dir = "result/captions/"
 @words_dir = "result/words/"
-@csv_summary = ["英語", "日本語訳"]
+@csv_summary = ["English", "Japanese"]
+@uri_count = 0
 
-def generate_json_file(mail, password, pc)
+def generate_json_file(pc)
   File.open("user.json", 'w') do |file|
-  hash = { "user" => { "email" => mail, "password" => password, "user_pc" => pc }}
+  hash = {"user_pc" => pc }
   str = JSON.dump(hash, file)
   end
 end
@@ -27,8 +26,6 @@ end
 def read_json_file()
   File.open("user.json") do |file|
   hash = JSON.load(file)
-  @user_email = hash["user"]["email"]
-  @user_paswd = hash["user"]["password"]
   @user_pc = hash["user"]["user_pc"]
   end
 end
@@ -37,13 +34,7 @@ end
 def get_user()
   chk = false
   if File.exist?("user.json") == false
-    puts "初期登録します"
-    puts "下記URLにアクセスし登録する。\n URL：https://accounts.weblio.jp/uwl/register/user-entry"
     while chk == false
-      puts "登録したメールアドレスを入力してください."
-      mail = gets.chomp
-      puts "パスワードを入力してください。"
-      password = gets.chomp
       puts "使用しているパソコンがwindowsですか?(y/n)"
       ans_pc = gets.chomp
       if ans_pc == "y"
@@ -51,23 +42,22 @@ def get_user()
       else
         pc = "mac"
       end
-      puts "下記ユーザー情報を登録します。よろしいですか？\n
+      puts "下記情報で保存します。\n
       ============================\n
-      mail:#{mail}\n
-      pass:#{password}\n
       use_pc:#{pc}\n
       ============================\n
       よろしいですか？(y/n)"
       admit = gets.chomp
       if admit == "y"
-        generate_json_file(mail, password, pc)
-        puts "ユーザー情報を登録しました。\n"
+        generate_json_file(pc)
+        puts "保存しました。\n"
         chk = true
       end
     end
   end
   read_json_file()
 end
+
 
 def get_video_id(video_url)
   return video_url.to_s.gsub!(/https:\/\/www.youtube.com\/watch\?v=|\n|\&(.*)/, "")
@@ -151,115 +141,89 @@ def get_video_words(caption)
   return words
 end
 
+def count_chk()
+  @uri_count = @uri_count + 1
+  if @uri_count == 15
+    sleep 10
+     @uri_count = 0
+   end
+ end
 
-#####seleniumの部分
-def page_chk(time,path,option)
-    wait = Selenium::WebDriver::Wait.new(:timeout => time)
-    wait.until {@driver.find_element(:xpath, "#{path}").displayed?}
-    if option == 0
-    @driver.find_element(:xpath, "#{path}").click
-    elsif option == 2
+def get_meaning_word(target_word)
+  count_chk()
+  req_url =  "https://ejje.weblio.jp/content/#{target_word}"
+  result = []
+  begin
+    html = open(req_url).read
+    doc = Nokogiri::HTML(html)
+    text = doc.css('.midashigo/text()').first.content
+  result << text
+  word_content = doc.css('.Kejje') #意味全部のHTML
+  means = word_content.css('.level0', '.KejjeYr')#品詞、日本語訳、例文のHTML
+  cntents = word_content.css('.qotC')#熟語？体力あったら抜く
 
-    end
-end
-
-def selenium(words)
-  #日時の取得
-  puts "英単語検索する？(y/n)※100語5分くらいかかります。"
-  ans = gets.chomp
-  if ans == "y"
-    t = Time.now
-    day = t.strftime("%Y%m%d%H%S")
-
-    #変数の宣言
-    search_word = []#CSV読み込み格納変数
-    file_name = "result/words/output_#{@video_id}.csv"
-
-    #CSV作成
-    #, :encoding => "SJIS"
-    CSV.open(file_name, 'w') do |csv|
-      if @user_pc == "win"
-        @csv_summary.each do |t|
-          t.to_s.encode(Encoding::SJIS, :invalid => :replace, :undef => :replace)
-        end
-        csv << @csv_summary
-
-      elsif @user_pc == "mac"
-        csv << @csv_summary
-      end
-    end
-
-    #Selenium
-    @driver = Selenium::WebDriver.for :chrome
-    @driver.navigate.to"https://ejje.weblio.jp/"
-
-    #ターボモード
-    @driver.find_element(:xpath, '//*[@id="turbo"]/img').click#ターボON
-    page_chk(10,  '//*[@id="simplemodal-data"]/div/div[6]/a[2]', 0)
-    @driver.find_element(:xpath, '//*[@id="modal-mail"]').send_key(@user_email)#メールアドレス
-    @driver.find_element(:xpath, '//*[@id="modal-password"]').send_key(@user_paswd)#パスワード
-    @driver.find_element(:xpath, '//*[@id="simplemodal-data"]/div/div[6]/a[1]').click#ログイン
-    sleep 3
-
-    words.each do |word|
-      #関数内変数
-      search_word = nil
-      results = []
-
-      #検索ボックス
-      @driver.find_element(:xpath, '//*[@id="searchWord"]').clear
-      @driver.find_element(:xpath, '//*[@id="searchWord"]').send_keys(word)
-      @driver.find_element(:xpath, '//*[@id="headFixBxTR"]/input').click
-      begin
-
-        #ここいらない？
-        #page_chk(2, '//*[@id="turboContents"]/div/div[1]', 1)#検索結果チェック
-
-        search_word = @driver.find_element(:xpath, '//*[@id="turboContents"]/div/div[1]').text#検索ワードのxpath
-        @driver.find_elements(:class, 'level0').each do |element|#lvlB：検索語句の詳細
-          results << element.text.encode(Encoding::SJIS, :invalid => :replace, :undef => :replace)
-        end
-      rescue
-        search_word = word
-        if results == nil
-          results << "検索結果なし"
-        end
+  means.each do |mean|
+    if mean.attributes["class"].to_s == "level0"#品詞、日本語訳のHTML
+      if mean.css('.KnenjSub').to_s != ""#品詞
+        part = mean.css('.KnenjSub').text
+        result << "【#{part}】"
+      elsif mean.css('.lvlB').to_s != ""#日本語訳
+        content = mean.css('.lvlB').text
+        result << content
       end
 
-      puts ""
-      puts "＝＝＝＝＝＝＝＝＝＝＝＝"
-      puts "検索結果：#{word}"
-      puts "＝＝＝＝＝＝＝＝＝＝＝＝"
-      puts results
-
-      #CSV書き込み
-      CSV.open(file_name,'a') do |result|
-        enter = []
-        if @user_pc == "win"
-        enter << search_word.encode(Encoding::SJIS, :invalid => :replace, :undef => :replace)
-      elsif @user_pc == "mac"
-        enter << search_word
-      end
-
-        results.each do |jpn|
-          enter << jpn.gsub(/(\r\n?|\n)/,",")
-        end
-        if @user_pc == "win"
-        result << enter#.encode(Encoding::SJIS, :invalid => :replace, :undef => :replace)
-        elsif @user_pc == "mac"
-          result << enter
-        end
+    elsif mean.attributes["class"].to_s == "KejjeYr"#例文のHTML
+      ex_sentences = mean.css('.KejjeYrLn.rmvDots')
+      ex_sentences.each do |ex_sentence|
+        en = ex_sentence.css('.KejjeYrEn').text#例文英語
+        ja = ex_sentence.css('.KejjeYrJp').text#例文日本語訳
+        result << "【例文】#{en} 【意味】#{ja}"
       end
     end
   end
+rescue
+  text = [target_word, "検索情報なし"]
+  result << text
 end
+  return result
+end
+
+def create_csv()
+  CSV.open("words_#{@video_id}.csv",'w') do |csv|
+    if @user_pc == "win"
+      @csv_summary.each do |t|
+        t.to_s.encode(Encoding::SJIS, :invalid => :replace, :undef => :replace)
+      end
+      csv << @csv_summary
+    elsif @user_pc == "mac"
+      csv << @csv_summary
+    end
+  end
+
+end
+def enter_csv(result)
+  #CSV書き込み
+  CSV.open("words_#{@video_id}.csv",'a') do |csv|
+    if @user_pc == "win"
+      csv << result#.encode(Encoding::SJIS, :invalid => :replace, :undef => :replace)
+    elsif @user_pc == "mac"
+      csv << result
+    end
+  end
+end
+
 
 def main
 get_user()
 target = get_caption_list()
 caption = get_video_caption(target)
 words = get_video_words(caption)
-selenium(words)
+create_csv()
+words.each do |word|
+  result = get_meaning_word(word)
+  enter_csv(result)
+end
+
 puts "======================END========================"
 end
 
